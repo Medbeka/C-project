@@ -1,12 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipes;
 using System.Text.RegularExpressions;
 using System.Threading;
 
 class Program
 {
-    // This dictionary holds: filename -> (word -> count)
     static Dictionary<string, Dictionary<string, int>> fileWordCounts = new();
 
     static void Main(string[] args)
@@ -27,14 +27,14 @@ class Program
             return;
         }
 
-        // Start the file reading thread
         Thread readingThread = new Thread(() => ReadAndIndexFiles(directoryPath));
         readingThread.Start();
-
-        // Wait for the reading thread to finish before exiting
         readingThread.Join();
 
-        // For now, just print the result to console
+        Thread sendingThread = new Thread(() => SendDataToMaster("agentA"));
+        sendingThread.Start();
+        sendingThread.Join();
+
         foreach (var fileEntry in fileWordCounts)
         {
             string filename = fileEntry.Key;
@@ -57,11 +57,8 @@ class Program
         foreach (string file in files)
         {
             string text = File.ReadAllText(file);
-
-            // Index words in this file
             Dictionary<string, int> wordCounts = IndexWords(text);
 
-            // Add to the main dictionary
             string filename = Path.GetFileName(file);
             lock (fileWordCounts)
             {
@@ -74,7 +71,6 @@ class Program
     {
         Dictionary<string, int> wordCounts = new();
 
-        // Use regex to extract words ignoring punctuation
         foreach (Match match in Regex.Matches(text.ToLower(), @"\b\w+\b"))
         {
             string word = match.Value;
@@ -86,5 +82,30 @@ class Program
 
         return wordCounts;
     }
-}
 
+    static void SendDataToMaster(string pipeName)
+    {
+        try
+        {
+            using NamedPipeClientStream pipeClient = new(".", pipeName, PipeDirection.Out);
+            pipeClient.Connect();
+
+            using StreamWriter writer = new(pipeClient);
+            foreach (var fileEntry in fileWordCounts)
+            {
+                string file = fileEntry.Key;
+                foreach (var wordEntry in fileEntry.Value)
+                {
+                    string line = $"{file}:{wordEntry.Key}:{wordEntry.Value}";
+                    writer.WriteLine(line);
+                }
+            }
+
+            Console.WriteLine("Agent A: Data sent to Master.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Agent A Error: {ex.Message}");
+        }
+    }
+}
