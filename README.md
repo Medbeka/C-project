@@ -8,3 +8,8 @@
 - Reads `.txt` files from a given folder path (via command-line)
 - Counts how many times each word appears per file
 - Prints result to the console
+## stage 2: Master progran was created
+- Created Master console app
+- Receives data from AgentA via named pipe "agentA"
+- Displays each line received
+
