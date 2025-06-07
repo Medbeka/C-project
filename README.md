@@ -14,9 +14,15 @@
 - Receives data from AgentA via named pipe "agentA"
 - Displays each line received
   
-## Stage 3: Agent B + Master Aggregation
+## Stage 3: Agent B and Master Aggregation
 - Added AgentB project 
 - Master now can get info from both agents using threads
 - Aggregates word counts from both
+
+## Stage 4: Multithread and CPU usage 
+- Agents use separate threads for file reading and data sending.
+- Master handles multiple named pipe connections concurrently with dedicated threads.
+- Implemented CPU core affinity to assign each process Agent A, Agent B, and Master to a separate CPU core
+
 
 
