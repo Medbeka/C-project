@@ -1,17 +1,24 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Pipes;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.IO.Pipes;
+using System.Diagnostics;
+using System.Collections.Concurrent;
 
 class Program
 {
     static Dictionary<string, Dictionary<string, int>> fileWordCounts = new();
+    static readonly object lockObj = new();
+    static readonly BlockingCollection<string> pipeQueue = new();
 
     static void Main(string[] args)
     {
+        SetCpuAffinity(1); 
+
         Console.WriteLine("Agent B started.");
+        Console.WriteLine("Args received: " + string.Join(", ", args));
 
         if (args.Length == 0)
         {
@@ -23,34 +30,81 @@ class Program
 
         if (!Directory.Exists(directoryPath))
         {
-            Console.WriteLine("Directory does not exist.");
+            Console.WriteLine("Directory does not exist: " + directoryPath);
             return;
         }
 
         Thread readingThread = new Thread(() => ReadAndIndexFiles(directoryPath));
+        Thread sendingThread = new Thread(() => SendDataToMaster("agentB"));
+
         readingThread.Start();
+        sendingThread.Start();
+
         readingThread.Join();
 
-        Thread sendingThread = new Thread(() => SendDataToMaster("agentB"));
-        sendingThread.Start();
+        Console.WriteLine("\n--- Word Counts Per File ---");
+        lock (lockObj)
+        {
+            foreach (var fileEntry in fileWordCounts)
+            {
+                string filename = fileEntry.Key;
+                var wordCounts = fileEntry.Value;
+                Console.WriteLine($"File: {filename}");
+                foreach (var wordEntry in wordCounts)
+                {
+                    Console.WriteLine($"{wordEntry.Key}: {wordEntry.Value}");
+                }
+
+                int totalWords = 0;
+                foreach (var count in wordCounts.Values)
+                    totalWords += count;
+                Console.WriteLine($"Total words: {totalWords}\n");
+            }
+        }
+
+        pipeQueue.CompleteAdding(); 
         sendingThread.Join();
 
         Console.WriteLine("Agent B finished.");
     }
 
+    static void SetCpuAffinity(int cpuIndex)
+    {
+#if WINDOWS || LINUX
+        try
+        {
+            var process = Process.GetCurrentProcess();
+            IntPtr mask = (IntPtr)(1 << cpuIndex);
+            process.ProcessorAffinity = mask;
+            Console.WriteLine($"Agent B running on CPU core {cpuIndex}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Could not set CPU affinity: " + ex.Message);
+        }
+#else
+        Console.WriteLine("CPU affinity setting is not supported on this platform.");
+#endif
+    }
+
     static void ReadAndIndexFiles(string directoryPath)
     {
         string[] files = Directory.GetFiles(directoryPath, "*.txt");
-
         foreach (string file in files)
         {
             string text = File.ReadAllText(file);
             Dictionary<string, int> wordCounts = IndexWords(text);
             string filename = Path.GetFileName(file);
 
-            lock (fileWordCounts)
+            lock (lockObj)
             {
                 fileWordCounts[filename] = wordCounts;
+            }
+
+            foreach (var wordEntry in wordCounts)
+            {
+                string line = $"{filename}:{wordEntry.Key}:{wordEntry.Value}";
+                pipeQueue.Add(line);
             }
         }
     }
@@ -58,7 +112,6 @@ class Program
     static Dictionary<string, int> IndexWords(string text)
     {
         Dictionary<string, int> wordCounts = new();
-
         foreach (Match match in Regex.Matches(text.ToLower(), @"\b\w+\b"))
         {
             string word = match.Value;
@@ -67,7 +120,6 @@ class Program
             else
                 wordCounts[word] = 1;
         }
-
         return wordCounts;
     }
 
@@ -77,27 +129,16 @@ class Program
         {
             using NamedPipeClientStream pipeClient = new(".", pipeName, PipeDirection.Out);
             pipeClient.Connect();
-
             using StreamWriter writer = new(pipeClient) { AutoFlush = true };
 
-            lock (fileWordCounts)
+            foreach (var line in pipeQueue.GetConsumingEnumerable())
             {
-                foreach (var fileEntry in fileWordCounts)
-                {
-                    string filename = fileEntry.Key;
-                    foreach (var wordEntry in fileEntry.Value)
-                    {
-                        string line = $"{filename}:{wordEntry.Key}:{wordEntry.Value}";
-                        writer.WriteLine(line);
-                    }
-                }
+                writer.WriteLine(line);
             }
-
-            Console.WriteLine("Data sent to master.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error sending data: {ex.Message}");
+            Console.WriteLine("Error sending data to master: " + ex.Message);
         }
     }
 }
